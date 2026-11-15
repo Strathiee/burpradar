@@ -152,10 +152,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     val tempFile = File(cacheDir, "rolling_${System.currentTimeMillis()}.mp4")
                     activeTempFile = tempFile
                     
-                    val recordStartLatch = Job()
-                    cameraRecorder.startContinuousRecording(tempFile) { savedFile ->
-                        recordStartLatch.complete()
-                    }
+                    cameraRecorder.startContinuousRecording(tempFile) { _ -> }
                     
                     var elapsedSec = 0
                     while (elapsedSec < 30 && !_isRecordingState.value && _isRunning.value) {
@@ -164,13 +161,11 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     
                     if (!_isRecordingState.value && _isRunning.value) {
-                        cameraRecorder.stopRecording()
-                        recordStartLatch.join()
+                        cameraRecorder.stopRecordingAndAwaitFinalize()
                         if (tempFile.exists()) {
                             tempFile.delete()
                         }
                     } else {
-                        recordStartLatch.join()
                         break
                     }
                 } else {
@@ -205,7 +200,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         _isRecordingState.value = true
         _detectorStatus.value = "RECORDING EVIDENCE!"
 
-        val detectionTimeMs = System.currentTimeMillis() - cameraRecorder.recordingStartTimeMs
+        val detectionTimeMs = maxOf(0L, System.currentTimeMillis() - cameraRecorder.recordingStartTimeMs)
         val clipDuration = _clipDurationMs.value
         val preRoll = clipDuration / 2
         val startMs = maxOf(0L, detectionTimeMs - preRoll)
@@ -214,44 +209,48 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         val tempFile = activeTempFile ?: return
 
         viewModelScope.launch {
-            val currentDuration = System.currentTimeMillis() - cameraRecorder.recordingStartTimeMs
+            val currentDuration = maxOf(0L, System.currentTimeMillis() - cameraRecorder.recordingStartTimeMs)
             val waitTime = endMs - currentDuration
             if (waitTime > 0) {
                 delay(waitTime)
             }
             
-            cameraRecorder.stopRecording()
+            val finalizedTempFile = cameraRecorder.stopRecordingAndAwaitFinalize() ?: tempFile
             
             withContext(Dispatchers.IO) {
-                var retryCount = 0
-                while (!tempFile.exists() && retryCount < 10) {
-                    delay(100)
-                    retryCount++
-                }
-                
-                if (tempFile.exists()) {
-                    val videoDir = File(getApplication<Application>().cacheDir, "burp_videos").apply { mkdirs() }
+                if (finalizedTempFile.exists() && finalizedTempFile.length() > 1024L) {
+                    val baseDir = getApplication<Application>().getExternalFilesDir(null) ?: getApplication<Application>().filesDir
+                    val videoDir = File(baseDir, "burp_videos").apply { mkdirs() }
                     val outputFile = File(videoDir, "burp_${System.currentTimeMillis()}.mp4")
                     
-                    Log.d(TAG, "Extracting sub-clip from ${tempFile.absolutePath} starting at ${startMs}ms to ${endMs}ms")
-                    cameraRecorder.extractVideoClip(tempFile, outputFile, startMs, endMs)
+                    Log.d(TAG, "Extracting sub-clip from ${finalizedTempFile.absolutePath} (${finalizedTempFile.length()} bytes) starting at ${startMs}ms to ${endMs}ms")
+                    val extracted = cameraRecorder.extractVideoClip(finalizedTempFile, outputFile, startMs, endMs)
                     
-                    if (outputFile.exists() && outputFile.length() > 0) {
+                    if (!extracted || !outputFile.exists() || outputFile.length() <= 1024L) {
+                        Log.w(TAG, "Sub-clip extraction failed; falling back to full finalized rolling clip.")
+                        finalizedTempFile.copyTo(outputFile, overwrite = true)
+                    }
+
+                    if (outputFile.exists() && outputFile.length() > 1024L) {
+                        cameraRecorder.exportToPublicMovies(outputFile)
                         saveEvent(outputFile, confidence)
                     } else {
-                        Log.e(TAG, "Failed to extract video clip. Output file is missing or empty.")
+                        Log.e(TAG, "Failed to extract or copy video clip. Output file is missing or empty.")
                     }
                     
-                    tempFile.delete()
+                    finalizedTempFile.delete()
                 } else {
-                    Log.e(TAG, "Temporary rolling file does not exist: ${tempFile.absolutePath}")
+                    Log.e(TAG, "Temporary rolling file missing or invalid (${finalizedTempFile.length()} bytes): ${finalizedTempFile.absolutePath}")
+                    if (finalizedTempFile.exists()) finalizedTempFile.delete()
                 }
             }
             
             _isRecordingState.value = false
             _detectorStatus.value = "Active & Listening"
             
-            startContinuousRecordingLoop()
+            if (_isRunning.value) {
+                startContinuousRecordingLoop()
+            }
         }
     }
 
