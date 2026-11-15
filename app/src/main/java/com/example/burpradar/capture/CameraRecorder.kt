@@ -28,6 +28,7 @@ import java.util.concurrent.Executors
 class CameraRecorder(private val context: Context) {
 
     private var cameraProvider: ProcessCameraProvider? = null
+    private var previewUseCase: Preview? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
     private var finalizeDeferred: CompletableDeferred<File?>? = null
@@ -82,6 +83,7 @@ class CameraRecorder(private val context: Context) {
         }
 
         try {
+            stopRecording()
             provider.unbindAll()
 
             // Setup VideoCapture with Recorder (Target SD Quality to conserve resources)
@@ -97,6 +99,7 @@ class CameraRecorder(private val context: Context) {
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
+                previewUseCase = preview
                 provider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
@@ -104,6 +107,7 @@ class CameraRecorder(private val context: Context) {
                     captureInstance
                 )
             } else {
+                previewUseCase = null
                 provider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
@@ -113,6 +117,24 @@ class CameraRecorder(private val context: Context) {
             onInitialized()
         } catch (e: Exception) {
             Log.e(TAG, "Use case binding failed", e)
+        }
+    }
+
+    fun attachPreview(
+        lifecycleOwner: LifecycleOwner,
+        previewView: PreviewView,
+        previewEnabled: Boolean,
+        lensFacing: Int,
+        onRebound: () -> Unit = {}
+    ) {
+        if (!previewEnabled) return
+        val existingPreview = previewUseCase
+        if (existingPreview != null && videoCapture != null) {
+            existingPreview.setSurfaceProvider(previewView.surfaceProvider)
+            Log.d(TAG, "Updated PreviewView surfaceProvider without unbinding VideoCapture.")
+        } else {
+            Log.d(TAG, "Preview use case was not bound yet; rebinding with PreviewView.")
+            bindCamera(lifecycleOwner, previewView, true, lensFacing, onRebound)
         }
     }
 
@@ -409,6 +431,7 @@ class CameraRecorder(private val context: Context) {
     fun unbind() {
         stopRecording()
         cameraProvider?.unbindAll()
+        previewUseCase = null
         videoCapture = null
     }
 

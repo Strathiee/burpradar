@@ -1,8 +1,13 @@
 package com.example.burpradar.ui.main
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
 import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
@@ -78,6 +83,26 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     companion object {
         private const val TAG = "MainScreenViewModel"
+        const val ACTION_SIMULATE_BURP = "com.example.burpradar.ACTION_SIMULATE_BURP"
+    }
+
+    private val simulateBurpReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_SIMULATE_BURP) {
+                val conf = intent.getFloatExtra("confidence", 0.95f)
+                Log.d(TAG, "Received ACTION_SIMULATE_BURP broadcast (confidence=$conf)")
+                handleBurpDetected(conf)
+            }
+        }
+    }
+
+    init {
+        ContextCompat.registerReceiver(
+            application,
+            simulateBurpReceiver,
+            IntentFilter(ACTION_SIMULATE_BURP),
+            ContextCompat.RECEIVER_EXPORTED
+        )
     }
 
     fun setConfidenceThreshold(value: Float) {
@@ -110,7 +135,19 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun bindCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView?) {
-        cameraRecorder.bindCamera(lifecycleOwner, previewView, _previewEnabled.value, _lensFacing.value)
+        if (previewView != null && _isRunning.value) {
+            cameraRecorder.attachPreview(lifecycleOwner, previewView, _previewEnabled.value, _lensFacing.value) {
+                if (_isRunning.value && !_isRecordingState.value) {
+                    startContinuousRecordingLoop()
+                }
+            }
+        } else if (_isRunning.value) {
+            cameraRecorder.bindCamera(lifecycleOwner, previewView, _previewEnabled.value, _lensFacing.value) {
+                if (_isRunning.value && !_isRecordingState.value) {
+                    startContinuousRecordingLoop()
+                }
+            }
+        }
     }
 
     fun toggleCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView?) {
@@ -155,7 +192,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                     cameraRecorder.startContinuousRecording(tempFile) { _ -> }
                     
                     var elapsedSec = 0
-                    while (elapsedSec < 30 && !_isRecordingState.value && _isRunning.value) {
+                    while (elapsedSec < 30 && !_isRecordingState.value && _isRunning.value && cameraRecorder.isRecording) {
                         delay(1000)
                         elapsedSec++
                     }
@@ -164,6 +201,9 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                         cameraRecorder.stopRecordingAndAwaitFinalize()
                         if (tempFile.exists()) {
                             tempFile.delete()
+                        }
+                        if (elapsedSec == 0) {
+                            delay(500)
                         }
                     } else {
                         break
@@ -199,6 +239,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         _sessionCount.value += 1
         _isRecordingState.value = true
         _detectorStatus.value = "RECORDING EVIDENCE!"
+        continuousRecordingJob?.cancel()
 
         val detectionTimeMs = maxOf(0L, System.currentTimeMillis() - cameraRecorder.recordingStartTimeMs)
         val clipDuration = _clipDurationMs.value
@@ -339,6 +380,10 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onCleared() {
         super.onCleared()
+        try {
+            getApplication<Application>().unregisterReceiver(simulateBurpReceiver)
+        } catch (_: Exception) {
+        }
         burpDetector?.release()
         cameraRecorder.shutdown()
         

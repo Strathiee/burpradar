@@ -65,6 +65,8 @@ fun MainScreen(
         view.keepScreenOn = uiState.isRunning
     }
 
+    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
+
     // Permission check launcher
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -74,7 +76,7 @@ fun MainScreen(
 
         if (recordAudioGranted && cameraGranted) {
             if (lifecycleOwner != null) {
-                viewModel.startRadar(lifecycleOwner, null)
+                viewModel.startRadar(lifecycleOwner, previewViewRef)
             }
         } else {
             Toast.makeText(
@@ -82,14 +84,6 @@ fun MainScreen(
                 "Camera & Microphone permissions are required to run BurpRadar",
                 Toast.LENGTH_LONG
             ).show()
-        }
-    }
-
-    // Bind camera preview if we are running and preview is enabled
-    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
-    LaunchedEffect(uiState.isRunning, uiState.previewEnabled, previewViewRef) {
-        if (uiState.isRunning && lifecycleOwner != null) {
-            viewModel.bindCamera(lifecycleOwner, previewViewRef)
         }
     }
 
@@ -140,7 +134,12 @@ fun MainScreen(
                         }
                     },
                     onStopClick = { viewModel.stopRadar() },
-                    onPreviewBound = { pv -> previewViewRef = pv },
+                    onPreviewBound = { pv ->
+                        previewViewRef = pv
+                        if (uiState.isRunning && lifecycleOwner != null) {
+                            viewModel.bindCamera(lifecycleOwner, pv)
+                        }
+                    },
                     onFlipCameraClick = {
                         if (lifecycleOwner != null) {
                             viewModel.toggleCamera(lifecycleOwner, previewViewRef)
@@ -287,17 +286,19 @@ fun DashboardTab(
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
+            if (uiState.previewEnabled) {
+                AndroidView(
+                    factory = { ctx ->
+                        PreviewView(ctx).apply {
+                            scaleType = PreviewView.ScaleType.FILL_CENTER
+                            onPreviewBound(this)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             if (uiState.isRunning && uiState.previewEnabled) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    AndroidView(
-                        factory = { ctx ->
-                            PreviewView(ctx).apply {
-                                scaleType = PreviewView.ScaleType.FILL_CENTER
-                                onPreviewBound(this)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
                     // Overlay Flip Camera Button in Top-Right
                     IconButton(
                         onClick = onFlipCameraClick,
@@ -316,23 +317,30 @@ fun DashboardTab(
                     }
                 }
             } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(16.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = if (uiState.isRunning) Icons.Default.VisibilityOff else Icons.Default.CameraAlt,
-                        contentDescription = "Camera Info",
-                        tint = Color.LightGray,
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Text(
-                        text = if (uiState.isRunning) "Camera Processing in Background\n(Preview Disabled for OLED Protection)" else "Sentinel Disarmed",
-                        textAlign = TextAlign.Center,
-                        color = Color.LightGray,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (uiState.isRunning) Icons.Default.VisibilityOff else Icons.Default.CameraAlt,
+                            contentDescription = "Camera Info",
+                            tint = Color.LightGray,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Text(
+                            text = if (uiState.isRunning) "Camera Processing in Background\n(Preview Disabled for OLED Protection)" else "Sentinel Disarmed",
+                            textAlign = TextAlign.Center,
+                            color = Color.LightGray,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
             }
         }
